@@ -128,7 +128,9 @@ service cloud.firestore {
         (isSigner() &&
          resource.data.firmanteUid == request.auth.uid &&
          resource.data.estado == 'Pendiente' &&
-         resource.data.actaEstado == 'Cerrada' &&
+         exists(/databases/$(database)/documents/minutasMesa/$(resource.data.actaId)) &&
+         get(/databases/$(database)/documents/minutasMesa/$(resource.data.actaId)).data.estado == 'Cerrada' &&
+         get(/databases/$(database)/documents/minutasMesa/$(resource.data.actaId)).data.versionDocumento == resource.data.versionDocumento &&
          request.resource.data.firmanteUid == resource.data.firmanteUid &&
          request.resource.data.usuarioFirmante == resource.data.usuarioFirmante &&
          request.resource.data.actaId == resource.data.actaId &&

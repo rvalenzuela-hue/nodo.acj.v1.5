@@ -46,7 +46,6 @@ export default function FirmaPortal(){
      const data={id:snap.id,...snap.data()};
      if(data.estado==='Firmado'){await loadDocs();setSelected(data);setMsg('Este documento ya estaba firmado.');return;}
      if(data.firmanteUid!==u.uid)throw new Error('Este documento está asignado a otra cuenta.');
-     if(String(data.actaEstado||'')!=='Cerrada')throw new Error('El acta todavía no está cerrada.');
      const usuario=String(perfil?.usuario||'').trim().toLowerCase();
      if(data.usuarioFirmante&&usuario&&String(data.usuarioFirmante).trim().toLowerCase()!==usuario)throw new Error('El usuario asignado al documento no coincide con tu sesión.');
      if(!globalThis.crypto?.subtle)throw new Error('Este navegador no permite generar la huella criptográfica de la firma.');
@@ -57,7 +56,9 @@ export default function FirmaPortal(){
      const signatureCode=`NODO-SIG-${signedAt.slice(0,4)}-${signatureDigest.slice(0,8).toUpperCase()}-${signatureDigest.slice(8,16).toUpperCase()}-${signatureDigest.slice(16,24).toUpperCase()}`;
      const firmaNodo={version:'1',method:'Firma electrónica institucional NODO',uid:u.uid,usuario,signerName:data.nombre||perfil?.nombre||'',signedAt,documentHash,signatureDigest,signatureCode};
      await updateDoc(ref,{estado:'Firmado',conformidadEn:signedAt,metodo:'Firma electrónica institucional NODO',declaracionAceptada:true,firmaNodo});
-     const fresh={...data,estado:'Firmado',conformidadEn:signedAt,metodo:'Firma electrónica institucional NODO',declaracionAceptada:true,firmaNodo};
+     const verifySnap=await getDoc(ref);
+     if(!verifySnap.exists()||verifySnap.data()?.estado!=='Firmado')throw new Error('Firestore no confirmó el cambio a Firmado.');
+     const fresh={id:verifySnap.id,...verifySnap.data()};
      setSelected(fresh);
      setDocs(prev=>prev.map(x=>x.id===fresh.id?fresh:x));
      setMsg(`Documento firmado correctamente. Cadena: ${signatureCode}`);
