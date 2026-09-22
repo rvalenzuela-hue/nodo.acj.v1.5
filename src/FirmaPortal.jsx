@@ -1,8 +1,7 @@
 import React,{useEffect,useMemo,useState} from 'react';
 import {signInWithEmailAndPassword,signOut,onAuthStateChanged,updatePassword} from 'firebase/auth';
-import {collection,doc,getDoc,getDocs,query,where} from 'firebase/firestore';
+import {collection,doc,getDoc,getDocs,query,where,updateDoc} from 'firebase/firestore';
 import {auth,db} from './firebase';
-import {signActa} from './config/signingApi';
 
 const green='#31533a',bright='#3dad2d',bg='#f5f7f2',border='#dfe5dc',muted='#667268';
 const input={width:'100%',boxSizing:'border-box',padding:'10px 12px',border:`1px solid ${border}`,borderRadius:9,fontSize:14,background:'#fff'};
@@ -23,7 +22,51 @@ export default function FirmaPortal(){
  useEffect(()=>{if(user)loadDocs(user)},[user?.uid]);
  const pending=useMemo(()=>docs.filter(x=>x.estado!=='Firmado'),[docs]);
  const signed=useMemo(()=>docs.filter(x=>x.estado==='Firmado'),[docs]);
- async function signDoc(){if(!selected||busy)return;if(!confirm(`¿Firmar electrónicamente “${selected.titulo}”? Esta acción queda registrada y no puede deshacerse desde tu portal.`))return;setBusy(true);setMsg('Firmando… conectando con Firebase. No pulses nuevamente.');try{const out=await signActa({firmaId:selected.id});setMsg(`Documento firmado correctamente. Cadena: ${out.signatureCode}`);await loadDocs();const fresh={...selected,estado:'Firmado',firmaNodo:out.firmaNodo};setSelected(fresh)}catch(e){console.error('Firma NODO:',e);setMsg(`No se pudo firmar: ${e?.message||'Error desconocido.'}`)}finally{setBusy(false)}}
+ async function sha256Hex(value){
+   const bytes=new TextEncoder().encode(value);
+   const digest=await crypto.subtle.digest('SHA-256',bytes);
+   return Array.from(new Uint8Array(digest)).map(b=>b.toString(16).padStart(2,'0')).join('');
+ }
+ function canonicalDocument(d){
+   const clean=v=>v==null?'':String(v);
+   return JSON.stringify({
+     actaId:clean(d.actaId),titulo:clean(d.titulo),tipoDocumento:clean(d.tipoDocumento),fecha:clean(d.fecha),hora:clean(d.hora),lugar:clean(d.lugar),modalidad:clean(d.modalidad),preside:clean(d.preside),secretaria:clean(d.secretaria),ordenDia:clean(d.ordenDia),desarrollo:clean(d.desarrollo),acuerdos:clean(d.acuerdos),observaciones:clean(d.observaciones),versionDocumento:Number(d.versionDocumento||1),nombre:clean(d.nombre),cargo:clean(d.cargo),usuarioFirmante:clean(d.usuarioFirmante),firmanteUid:clean(d.firmanteUid)
+   });
+ }
+ async function signDoc(){
+   if(!selected||busy)return;
+   if(!confirm(`¿Firmar electrónicamente “${selected.titulo}”? Esta acción queda registrada y no puede deshacerse desde tu portal.`))return;
+   setBusy(true);setMsg('Registrando firma…');
+   try{
+     const u=auth.currentUser;
+     if(!u?.uid)throw new Error('Tu sesión ya no está activa. Cierra sesión y vuelve a entrar.');
+     const ref=doc(db,'actaFirmas',selected.id);
+     const snap=await getDoc(ref);
+     if(!snap.exists())throw new Error('El documento asignado ya no existe.');
+     const data={id:snap.id,...snap.data()};
+     if(data.estado==='Firmado'){await loadDocs();setSelected(data);setMsg('Este documento ya estaba firmado.');return;}
+     if(data.firmanteUid!==u.uid)throw new Error('Este documento está asignado a otra cuenta.');
+     if(String(data.actaEstado||'')!=='Cerrada')throw new Error('El acta todavía no está cerrada.');
+     const usuario=String(perfil?.usuario||'').trim().toLowerCase();
+     if(data.usuarioFirmante&&usuario&&String(data.usuarioFirmante).trim().toLowerCase()!==usuario)throw new Error('El usuario asignado al documento no coincide con tu sesión.');
+     if(!globalThis.crypto?.subtle)throw new Error('Este navegador no permite generar la huella criptográfica de la firma.');
+     const signedAt=new Date().toISOString();
+     const documentHash=await sha256Hex(canonicalDocument(data));
+     const nonce=Array.from(crypto.getRandomValues(new Uint8Array(16))).map(b=>b.toString(16).padStart(2,'0')).join('');
+     const signatureDigest=await sha256Hex([documentHash,u.uid,usuario,signedAt,nonce].join('|'));
+     const signatureCode=`NODO-SIG-${signedAt.slice(0,4)}-${signatureDigest.slice(0,8).toUpperCase()}-${signatureDigest.slice(8,16).toUpperCase()}-${signatureDigest.slice(16,24).toUpperCase()}`;
+     const firmaNodo={version:'1',method:'Firma electrónica institucional NODO',uid:u.uid,usuario,signerName:data.nombre||perfil?.nombre||'',signedAt,documentHash,signatureDigest,signatureCode};
+     await updateDoc(ref,{estado:'Firmado',conformidadEn:signedAt,metodo:'Firma electrónica institucional NODO',declaracionAceptada:true,firmaNodo});
+     const fresh={...data,estado:'Firmado',conformidadEn:signedAt,metodo:'Firma electrónica institucional NODO',declaracionAceptada:true,firmaNodo};
+     setSelected(fresh);
+     setDocs(prev=>prev.map(x=>x.id===fresh.id?fresh:x));
+     setMsg(`Documento firmado correctamente. Cadena: ${signatureCode}`);
+     await loadDocs();
+   }catch(e){
+     console.error('Firma NODO:',e);
+     setMsg(`No se pudo firmar: ${e?.message||'Error desconocido.'}`);
+   }finally{setBusy(false)}
+ }
  async function changePassword(){if(newPass.length<6){setMsg('La contraseña debe tener al menos 6 caracteres.');return}try{await updatePassword(auth.currentUser,newPass);setNewPass('');setMsg('Contraseña de acceso actualizada.')}catch(e){setMsg(e?.code==='auth/requires-recent-login'?'Cierra sesión y vuelve a entrar antes de cambiar la contraseña.':'No fue posible cambiar la contraseña.')}}
  if(user===undefined)return <div style={{fontFamily:'Arial',padding:30}}>Cargando Portal de Firmas…</div>;
  if(!user)return <Login/>;
@@ -31,5 +74,5 @@ export default function FirmaPortal(){
  {perfil?.activo===false&&<div style={{padding:14,background:'#fff0f0',borderRadius:10,color:'#8d2626'}}>Tu cuenta está desactivada. Contacta a Administración.</div>}
  {msg&&<div style={{padding:11,background:'#fff',border:`1px solid ${border}`,borderRadius:9,marginBottom:12,fontSize:12,fontWeight:700}}>{msg}</div>}
  <div style={{display:'grid',gridTemplateColumns:'minmax(280px,.9fr) minmax(0,1.4fr)',gap:14,alignItems:'start'}}><section style={{background:'#fff',border:`1px solid ${border}`,borderRadius:12,padding:14}}><h2 style={{color:green,marginTop:0,fontSize:18}}>Mis documentos</h2><div style={{fontSize:12,color:muted,marginBottom:10}}>{pending.length} pendiente(s) · {signed.length} firmado(s)</div>{busy&&!docs.length?<div>Cargando…</div>:docs.map(x=><button key={x.id} onClick={()=>{setSelected(x);setMsg('')}} style={{display:'block',width:'100%',textAlign:'left',border:`1px solid ${selected?.id===x.id?bright:border}`,background:selected?.id===x.id?'#f2f8ef':'#fff',borderRadius:9,padding:10,marginBottom:7,cursor:'pointer'}}><b style={{color:green}}>{x.tipoDocumento||'Acta'} · {x.titulo}</b><div style={{fontSize:11,color:muted,marginTop:3}}>{x.fecha||''} {x.hora||''} · {x.estado||'Pendiente'}</div></button>)}{!docs.length&&!busy&&<div style={{fontSize:12,color:muted}}>No tienes documentos asignados.</div>}</section>
- <section style={{background:'#fff',border:`1px solid ${border}`,borderRadius:12,padding:18,minHeight:260}}>{!selected?<div style={{color:muted}}>Selecciona un documento para revisarlo.</div>:<><h2 style={{color:green,marginTop:0}}>{selected.tipoDocumento}: {selected.titulo}</h2><div style={{fontSize:12}}><b>Fecha:</b> {selected.fecha} {selected.hora||''}<br/><b>Participante:</b> {selected.nombre}<br/><b>Versión:</b> {selected.versionDocumento||1}<br/><b>Estado:</b> {selected.estado}</div>{[['Orden del día',selected.ordenDia],['Desarrollo',selected.desarrollo],['Acuerdos, responsables y fechas',selected.acuerdos],['Observaciones',selected.observaciones]].filter(([,v])=>v).map(([k,v])=><div key={k} style={{marginTop:16}}><b style={{color:green,fontSize:12}}>{k}</b><div style={{whiteSpace:'pre-wrap',padding:10,background:'#f8faf6',borderRadius:8,fontSize:12,lineHeight:1.5,marginTop:4}}>{v}</div></div>)}{selected.estado==='Firmado'?<div style={{marginTop:18,padding:13,background:'#edf7ea',borderRadius:9}}><b style={{color:green}}>Firmado electrónicamente en NODO</b><div style={{fontSize:11,marginTop:5}}>Fecha/hora: {selected.firmaNodo?.signedAt?new Date(selected.firmaNodo.signedAt).toLocaleString('es-MX'):'—'}<br/>Hash SHA-256: <span style={{wordBreak:'break-all'}}>{selected.firmaNodo?.documentHash||'—'}</span><br/>Cadena de firma: <b style={{wordBreak:'break-all'}}>{selected.firmaNodo?.signatureCode||'—'}</b></div></div>:<div style={{marginTop:18,padding:13,border:`1px solid ${border}`,borderRadius:9}}><p style={{fontSize:12,marginTop:0}}>Al firmar declaras que revisaste esta versión cerrada y manifiestas tu conformidad con su contenido. La firma se vinculará a tu sesión autenticada de NODO.</p><button style={{...btn()}} disabled={busy||perfil?.activo===false} onClick={signDoc}>{busy?'Firmando…':'Firmar documento'}</button></div>}<p style={{fontSize:10,color:muted,marginTop:18}}>La Firma NODO es una firma electrónica institucional con trazabilidad criptográfica. No se presenta como e.firma/FIEL ni como Firma Electrónica Avanzada.</p></>}</section></div></main></div>
+ <section style={{background:'#fff',border:`1px solid ${border}`,borderRadius:12,padding:18,minHeight:260}}>{!selected?<div style={{color:muted}}>Selecciona un documento para revisarlo.</div>:<><h2 style={{color:green,marginTop:0}}>{selected.tipoDocumento}: {selected.titulo}</h2><div style={{fontSize:12}}><b>Fecha:</b> {selected.fecha} {selected.hora||''}<br/><b>Participante:</b> {selected.nombre}<br/><b>Versión:</b> {selected.versionDocumento||1}<br/><b>Estado:</b> {selected.estado}</div>{[['Orden del día',selected.ordenDia],['Desarrollo',selected.desarrollo],['Acuerdos, responsables y fechas',selected.acuerdos],['Observaciones',selected.observaciones]].filter(([,v])=>v).map(([k,v])=><div key={k} style={{marginTop:16}}><b style={{color:green,fontSize:12}}>{k}</b><div style={{whiteSpace:'pre-wrap',padding:10,background:'#f8faf6',borderRadius:8,fontSize:12,lineHeight:1.5,marginTop:4}}>{v}</div></div>)}{selected.estado==='Firmado'?<div style={{marginTop:18,padding:13,background:'#edf7ea',borderRadius:9}}><b style={{color:green}}>Firmado electrónicamente en NODO</b><div style={{fontSize:11,marginTop:5}}>Fecha/hora: {selected.firmaNodo?.signedAt?new Date(selected.firmaNodo.signedAt).toLocaleString('es-MX'):'—'}<br/>Hash SHA-256: <span style={{wordBreak:'break-all'}}>{selected.firmaNodo?.documentHash||'—'}</span><br/>Cadena de firma: <b style={{wordBreak:'break-all'}}>{selected.firmaNodo?.signatureCode||'—'}</b></div></div>:<div style={{marginTop:18,padding:13,border:`1px solid ${border}`,borderRadius:9}}><p style={{fontSize:12,marginTop:0}}>Al firmar declaras que revisaste esta versión cerrada y manifiestas tu conformidad con su contenido. La firma se vinculará a tu sesión autenticada de NODO.</p><button style={{...btn()}} disabled={busy||perfil?.activo===false} onClick={signDoc}>{busy?'Firmando…':'Firmar documento'}</button>{msg&&<div style={{marginTop:10,padding:9,borderRadius:8,background:msg.startsWith('Documento firmado')?'#edf7ea':'#fff4f4',color:msg.startsWith('Documento firmado')?green:'#8d2626',fontSize:11,fontWeight:800}}>{msg}</div>}</div>}<p style={{fontSize:10,color:muted,marginTop:18}}>La Firma NODO es una firma electrónica institucional con trazabilidad criptográfica. No se presenta como e.firma/FIEL ni como Firma Electrónica Avanzada.</p></>}</section></div></main></div>
 }

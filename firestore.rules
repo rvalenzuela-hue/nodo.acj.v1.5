@@ -124,7 +124,23 @@ service cloud.firestore {
       allow get: if true;
       allow list: if known() || (isSigner() && resource.data.firmanteUid == request.auth.uid);
       allow create, delete: if known();
-      allow update: if known() || (resource.data.metodo == 'Conformidad electrónica' && resource.data.estado == 'Pendiente' && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['estado','conformidadEn','metodo','declaracionAceptada']) && request.resource.data.estado == 'Conforme' && request.resource.data.declaracionAceptada == true);
+      allow update: if known() ||
+        (isSigner() &&
+         resource.data.firmanteUid == request.auth.uid &&
+         resource.data.estado == 'Pendiente' &&
+         resource.data.actaEstado == 'Cerrada' &&
+         request.resource.data.firmanteUid == resource.data.firmanteUid &&
+         request.resource.data.usuarioFirmante == resource.data.usuarioFirmante &&
+         request.resource.data.actaId == resource.data.actaId &&
+         request.resource.data.versionDocumento == resource.data.versionDocumento &&
+         request.resource.data.diff(resource.data).affectedKeys().hasOnly(['estado','conformidadEn','metodo','declaracionAceptada','firmaNodo']) &&
+         request.resource.data.estado == 'Firmado' &&
+         request.resource.data.declaracionAceptada == true &&
+         request.resource.data.metodo == 'Firma electrónica institucional NODO' &&
+         request.resource.data.firmaNodo.uid == request.auth.uid &&
+         request.resource.data.firmaNodo.usuario == resource.data.usuarioFirmante &&
+         request.resource.data.firmaNodo.method == 'Firma electrónica institucional NODO') ||
+        (resource.data.metodo == 'Conformidad electrónica' && resource.data.estado == 'Pendiente' && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['estado','conformidadEn','metodo','declaracionAceptada']) && request.resource.data.estado == 'Conforme' && request.resource.data.declaracionAceptada == true);
     }
     match /rezagadosBecas/{id} { allow read, create, update, delete: if known(); }
     match /solicitudesBecas/{id} {
